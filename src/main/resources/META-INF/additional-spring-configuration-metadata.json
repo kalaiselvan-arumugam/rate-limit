@@ -1,0 +1,22 @@
+{"properties": [
+  {
+    "name": "ratelimit.short.capacity",
+    "type": "java.lang.String",
+    "description": "A description for 'ratelimit.short.capacity'"
+  },
+  {
+    "name": "ratelimit.short.windowSeconds",
+    "type": "java.lang.String",
+    "description": "A description for 'ratelimit.short.windowSeconds'"
+  },
+  {
+    "name": "ratelimit.minute.capacity",
+    "type": "java.lang.String",
+    "description": "A description for 'ratelimit.minute.capacity'"
+  },
+  {
+    "name": "ratelimit.minute.windowSeconds",
+    "type": "java.lang.String",
+    "description": "A description for 'ratelimit.minute.windowSeconds'"
+  }
+]}
