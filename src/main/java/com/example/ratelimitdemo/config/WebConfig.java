@@ -18,4 +18,3 @@ public class WebConfig implements WebMvcConfigurer {
         registry.addInterceptor(rateLimitInterceptor).addPathPatterns("/api/**");
     }
 }
-

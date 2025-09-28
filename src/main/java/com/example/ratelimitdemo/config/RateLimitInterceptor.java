@@ -1,6 +1,8 @@
 package com.example.ratelimitdemo.config;
 
 import com.example.ratelimitdemo.service.RateLimiterService;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContextHolder;
@@ -12,6 +14,8 @@ import jakarta.servlet.http.HttpServletResponse;
 
 @Component
 public class RateLimitInterceptor implements HandlerInterceptor {
+
+    private static final Logger log = LoggerFactory.getLogger(RateLimitInterceptor.class);
 
     private final RateLimiterService rateLimiterService;
 
@@ -29,13 +33,16 @@ public class RateLimitInterceptor implements HandlerInterceptor {
 
     public RateLimitInterceptor(RateLimiterService rateLimiterService) {
         this.rateLimiterService = rateLimiterService;
+        log.info("RateLimitInterceptor created");
     }
 
     @Override
     public boolean preHandle(HttpServletRequest request, HttpServletResponse response, Object handler) throws Exception {
         String path = request.getRequestURI();
+        log.debug("preHandle path={}", path);
         // apply limiter only to test1 and test3
         if (!"/api/test1".equals(path) && !"/api/test3".equals(path)) {
+            log.trace("Bypassing rate limiter for path={}", path);
             return true;
         }
 
@@ -49,13 +56,17 @@ public class RateLimitInterceptor implements HandlerInterceptor {
         String shortKey = keyBase + ":short";
         String minuteKey = keyBase + ":minute";
 
+        log.debug("Applying composite rate limit for user={} shortKey={} minuteKey={} (short cap={}, shortWindow={}, minute cap={}, minuteWindow={})",
+                user, shortKey, minuteKey, cfgShortCapacity, cfgShortWindowSeconds, cfgMinuteCapacity, cfgMinuteWindowSeconds);
+
         boolean allowed = rateLimiterService.tryConsumeComposite(shortKey, cfgShortCapacity, shortRefill,
                 minuteKey, cfgMinuteCapacity, minuteRefill);
 
-        // set headers
+        // fetch bucket snapshots for headers
         RateLimiterService.BucketInfo shortInfo = rateLimiterService.getBucketInfo(shortKey, cfgShortCapacity, shortRefill);
         RateLimiterService.BucketInfo minuteInfo = rateLimiterService.getBucketInfo(minuteKey, cfgMinuteCapacity, minuteRefill);
 
+        // set headers on current response if available
         response.setHeader("X-RateLimit-Short-Limit", String.valueOf(shortInfo.getCapacity()));
         response.setHeader("X-RateLimit-Short-Remaining", String.valueOf(shortInfo.getRemaining()));
         response.setHeader("X-RateLimit-Short-Retry-After", String.valueOf(shortInfo.getRetryAfterSeconds()));
@@ -69,11 +80,13 @@ public class RateLimitInterceptor implements HandlerInterceptor {
             if (retry > 0 && retry < Integer.MAX_VALUE) {
                 response.setHeader("Retry-After", String.valueOf(retry));
             }
-            // SC_TOO_MANY_REQUESTS constant may not be available in jakarta servlet API version; use literal 429
+            log.warn("Blocking request for user={} path={} shortRemaining={} minuteRemaining={} retryAfter={}",
+                    user, path, shortInfo.getRemaining(), minuteInfo.getRemaining(), retry);
             response.sendError(429, "Too Many Requests");
             return false;
         }
 
+        log.debug("Request allowed for user={} path={} shortRemaining={} minuteRemaining={}", user, path, shortInfo.getRemaining(), minuteInfo.getRemaining());
         return true;
     }
 }

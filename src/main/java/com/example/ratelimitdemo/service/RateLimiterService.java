@@ -1,5 +1,7 @@
 package com.example.ratelimitdemo.service;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
 import java.time.Instant;
@@ -9,20 +11,17 @@ import java.util.concurrent.ConcurrentHashMap;
 @Component
 public class RateLimiterService {
 
+    private static final Logger log = LoggerFactory.getLogger(RateLimiterService.class);
+
     private final Map<String, TokenBucket> buckets = new ConcurrentHashMap<>();
 
-    /**
-     * Try to consume a token for the given key (typically username+endpoint).
-     * Returns true if allowed, false if rate limit exceeded.
-     */
     public boolean tryConsume(String key, int capacity, double refillTokensPerSecond) {
         TokenBucket bucket = buckets.computeIfAbsent(key, k -> new TokenBucket(capacity, refillTokensPerSecond));
-        return bucket.tryConsume();
+        boolean allowed = bucket.tryConsume();
+        log.debug("tryConsume key={} capacity={} refill={} allowed={}", key, capacity, refillTokensPerSecond, allowed);
+        return allowed;
     }
 
-    /**
-     * Composite consume: consumes one token from both short and minute buckets atomically (with rollback).
-     */
     public boolean tryConsumeComposite(String shortKey, int shortCapacity, double shortRefillTokensPerSecond,
                                        String minuteKey, int minuteCapacity, double minuteRefillTokensPerSecond) {
         TokenBucket shortBucket = buckets.computeIfAbsent(shortKey, k -> new TokenBucket(shortCapacity, shortRefillTokensPerSecond));
@@ -30,22 +29,25 @@ public class RateLimiterService {
 
         // First try short bucket
         boolean shortAllowed = shortBucket.tryConsume();
+        log.debug("tryConsumeComposite shortKey={} allowed={} tokensRemaining={} (capacity={})",
+                shortKey, shortAllowed, shortBucket.peekTokens(), shortCapacity);
         if (!shortAllowed) {
             return false;
         }
         // Then try minute bucket; if fails, roll back short bucket by returning one token
         boolean minuteAllowed = minuteBucket.tryConsume();
+        log.debug("tryConsumeComposite minuteKey={} allowed={} tokensRemaining={} (capacity={})",
+                minuteKey, minuteAllowed, minuteBucket.peekTokens(), minuteCapacity);
         if (minuteAllowed) {
             return true;
         }
         // rollback short bucket
         shortBucket.addTokens(1.0);
+        log.debug("Rolled back shortKey={} after minute bucket fail; tokensNow={}", shortKey, shortBucket.peekTokens());
         return false;
     }
 
-    /**
-     * Return snapshot information about the bucket for headers: capacity, remaining tokens (floor), and retry-after seconds.
-     */
+    // Return snapshot information about the bucket for headers: capacity, remaining tokens (floor), and retry-after seconds.
     public BucketInfo getBucketInfo(String key, int capacity, double refillTokensPerSecond) {
         TokenBucket bucket = buckets.computeIfAbsent(key, k -> new TokenBucket(capacity, refillTokensPerSecond));
         double tokens = bucket.getTokens();
@@ -59,6 +61,7 @@ public class RateLimiterService {
                 retryAfterSeconds = Integer.MAX_VALUE;
             }
         }
+        log.debug("getBucketInfo key={} capacity={} tokens={} remaining={} retryAfter={}", key, capacity, tokens, remaining, retryAfterSeconds);
         return new BucketInfo(capacity, remaining, retryAfterSeconds);
     }
 
@@ -103,14 +106,17 @@ public class RateLimiterService {
             refill();
             if (tokens >= 1.0) {
                 tokens -= 1.0;
+                log.trace("Token consumed; tokens now={} (capacity={})", tokens, capacity);
                 return true;
             }
+            log.trace("Token not available; tokens={} (capacity={})", tokens, capacity);
             return false;
         }
 
         synchronized void addTokens(double amount) {
             refill();
             tokens = Math.min(capacity, tokens + amount);
+            log.trace("Added tokens amount={} tokensNow={} (capacity={})", amount, tokens, capacity);
         }
 
         synchronized double getTokens() {
@@ -118,13 +124,22 @@ public class RateLimiterService {
             return tokens;
         }
 
+        synchronized double peekTokens() {
+            refill();
+            return tokens;
+        }
+
         private void refill() {
             long now = Instant.now().toEpochMilli();
             long deltaMillis = now - lastRefillEpochMilli;
-            if (deltaMillis <= 0) return;
+            if (deltaMillis <= 0) {
+                log.trace("refill() skipped because deltaMillis<={}, lastRefill={}", deltaMillis, lastRefillEpochMilli);
+                return;
+            }
             double add = (deltaMillis / 1000.0) * refillTokensPerSecond;
             tokens = Math.min(capacity, tokens + add);
             lastRefillEpochMilli = now;
+            log.trace("Refilled tokens by {} over {}ms; tokens={} (capacity={})", add, deltaMillis, tokens, capacity);
         }
     }
 }
